@@ -227,6 +227,12 @@ group.add_argument('--patience-epochs', type=int, default=10, metavar='N',
                    help='patience epochs for Plateau LR scheduler (default: 10)')
 group.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RATE',
                    help='LR decay rate (default: 0.1)')
+group.add_argument('--lr-batches', type=float, default=7500, metavar='N',
+                   help="""Number of steps that affects how rapidly the learning rate
+                   decreases (only used for Eden). We suggest not to change this.""")
+group.add_argument('--lr-epochs', type=float, default=10, metavar='N',
+                   help="""Number of epochs that affects how rapidly the learning rate
+                   decreases (only used for Eden). """)
 
 # Augmentation & regularization parameters
 group = parser.add_argument_group('Augmentation and regularization parameters')
@@ -753,14 +759,21 @@ def main():
     elif resume_epoch is not None:
         start_epoch = resume_epoch
     if lr_scheduler is not None and start_epoch > 0:
+        num_updates = start_epoch * updates_per_epoch
+        if args.sched == 'eden':
+            assert args.opt == 'scaledadam', 'Eden scheduler is only for ScaledAdam optimizer'
+            # set epoch count and batch count first for Eden scheduler
+            lr_scheduler.epoch = start_epoch
+            lr_scheduler.batch = num_updates
+            # FIXME: store lr_scheduler in checkpoint
         if args.sched_on_updates:
-            lr_scheduler.step_update(start_epoch * updates_per_epoch)
+            lr_scheduler.step_update(num_updates)
         else:
             lr_scheduler.step(start_epoch)
 
     if utils.is_primary(args):
         _logger.info(
-            f'Scheduled epochs: {num_epochs}. LR stepped per {"epoch" if lr_scheduler.t_in_epochs else "update"}.')
+            f'Scheduled epochs: {num_epochs}. LR stepped per {"epoch" if not args.sched_on_updates else "update"}.')
 
     try:
         for epoch in range(start_epoch, num_epochs):
@@ -813,13 +826,17 @@ def main():
                 eval_metrics = ema_eval_metrics
 
             if output_dir is not None:
-                lrs = [param_group['lr'] for param_group in optimizer.param_groups]
+                if args.sched == 'eden':
+                    lr = max(lr_scheduler.get_last_lr())
+                else:
+                    lrs = [param_group['lr'] for param_group in optimizer.param_groups]
+                    lr = sum(lrs) / len(lrs)
                 utils.update_summary(
                     epoch,
                     train_metrics,
                     eval_metrics,
                     filename=os.path.join(output_dir, 'summary.csv'),
-                    lr=sum(lrs) / len(lrs),
+                    lr=lr,
                     write_header=best_metric is None,
                     log_wandb=args.log_wandb and has_wandb,
                 )
@@ -955,8 +972,11 @@ def train_one_epoch(
         update_start_time = time_now
 
         if update_idx % args.log_interval == 0:
-            lrl = [param_group['lr'] for param_group in optimizer.param_groups]
-            lr = sum(lrl) / len(lrl)
+            if args.sched == 'eden':
+                lr = max(lr_scheduler.get_last_lr())
+            else:
+                lrl = [param_group['lr'] for param_group in optimizer.param_groups]
+                lr = sum(lrl) / len(lrl)
 
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)

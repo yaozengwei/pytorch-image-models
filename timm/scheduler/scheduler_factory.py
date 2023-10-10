@@ -6,6 +6,7 @@ from typing import List, Union
 from torch.optim import Optimizer
 
 from .cosine_lr import CosineLRScheduler
+from .eden import Eden
 from .multistep_lr import MultiStepLRScheduler
 from .plateau_lr import PlateauLRScheduler
 from .poly_lr import PolyLRScheduler
@@ -41,6 +42,8 @@ def scheduler_kwargs(cfg):
         k_decay=getattr(cfg, 'lr_k_decay', 1.0),
         plateau_mode=plateau_mode,
         step_on_epochs=not getattr(cfg, 'sched_on_updates', False),
+        lr_batches=getattr(cfg, 'lr_batches', 7500),
+        lr_epochs=getattr(cfg, 'lr_epochs', 10),
     )
     return kwargs
 
@@ -81,6 +84,8 @@ def create_scheduler_v2(
         plateau_mode: str = 'max',
         step_on_epochs: bool = True,
         updates_per_epoch: int = 0,
+        lr_batches: float = 7500,
+        lr_epochs: float = 10,
 ):
     t_initial = num_epochs
     warmup_t = warmup_epochs
@@ -191,6 +196,9 @@ def create_scheduler_v2(
             **warmup_args,
             **noise_args,
         )
+    elif sched == 'eden':
+        assert not step_on_epochs, 'Eden only supports step per update'
+        lr_scheduler = Eden(optimizer, lr_batches, lr_epochs)
 
     if hasattr(lr_scheduler, 'get_cycle_length'):
         # for cycle based schedulers (cosine, tanh, poly) recalculate total epochs w/ cycles & cooldown
